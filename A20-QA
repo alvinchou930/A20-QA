@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A20 知識問答助理</title>
+  <style>
+    :root {
+      --bg-light: #fafafa;
+      --bg-dark: #1e1e1e;
+      --card-light: #ffffff;
+      --card-dark: #252526;
+      --text-light: #212121;
+      --text-dark: #e0e0e0;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --muted: #6b7280;
+      --shadow: 0 1px 2px rgba(0,0,0,.1);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg-light: #1e1e1e;
+        --card-light: #252526;
+        --text-light: #e0e0e0;
+        --text-dark: #212121;
+      }
+    }
+
+    body {
+      margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+      background: var(--bg-light); color: var(--text-light); min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    }
+    .page { width: 100%; max-width: 600px; padding: 2rem 1.5rem; }
+
+    .chat-container { flex: 1; width: 100%; overflow-y: auto; padding: 1rem 0; margin-top: .5rem; display: flex; flex-direction: column; gap: .8rem; }
+    .message { max-width: 85%; padding: .8rem 1rem; border-radius: 1rem; line-height: 1.4; font-size: .95rem; position: relative; }
+    .message.user { align-self: flex-end; background: var(--primary); color: white; }
+    .message.ai { align-self: flex-start; background: var(--card-dark); color: var(--text-dark); border: 1px solid var(--muted); }
+    .message.ai::before { content: "🤖"; position: absolute; left: -1.2rem; top: .2rem; font-size: 1.2rem; }
+    .message .timestamp { font-size: .7rem; color: var(--muted); margin-top: .3rem; display: block; }
+
+    .input-wrapper { width: 100%; display: flex; gap: .5rem; margin-top: .8rem; }
+    #api-key-input { width: 100%; padding: .6rem .8rem; border: 1px solid var(--muted); border-radius: .8rem; font-size: .9rem; background: var(--bg-dark); color: var(--text-light); outline: none; transition: border-color .2s; }
+    #api-key-input:focus { border-color: var(--primary); }
+    #api-key-input::placeholder { color: var(--muted); }
+    #user-input { flex: 1; padding: .6rem .8rem; border: 1px solid var(--muted); border-radius: .8rem; font-size: .9rem; outline: none; transition: border-color .2s; }
+    #user-input:focus { border-color: var(--primary); }
+    #user-input::placeholder { color: var(--muted); }
+    .btn-send { width: 40px; height: 40px; border: none; border-radius: .8rem; background: var(--primary); color: white; font-size: 1.2rem; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .2s; }
+    .btn-send:hover { background: var(--primary-hover); }
+    .btn-send:disabled { background: var(--muted); cursor: not-allowed; }
+    .hint { margin-top: .4rem; font-size: .75rem; color: var(--muted); text-align: center; }
+
+    @keyframes bubbleIn { from {opacity: 0; transform: translateY(10px);} to {opacity: 1; transform: translateY(0);} }
+    .message { animation: bubbleIn .3s ease-out forwards; opacity: 0; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); } 70% { box-shadow: 0 0 0 8px rgba(59,130,246,0); } 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); } }
+    .input-wrapper:focus-within .btn-send { animation: pulse 2s ease-out; }
+
+    .hint { margin-top: .5rem; font-size: .85rem; color: var(--muted); text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header style="text-align: margin-bottom 1rem;">
+      <h1 style="margin: 0 0 .4rem; font-size: 1.3rem; color: var(--primary);">A20 知識問答助理</h1>
+      <p style="margin: 0; font-size: .85rem; color: var(--muted);">基於 A20 練習包 + Groq LLM · 請先輸入 API Key</p>
+    </header>
+
+    <div class="chat-container" id="chat-container"></div>
+
+    <div class="input-wrapper" id="input-wrapper">
+      <input type="text" id="api-key-input" placeholder="輸入 Groq API Key" />
+      <input type="text" id="user-input" placeholder="輸入問題..." />
+      <button class="btn-send" id="btn-send" aria-label="送出">→</button>
+    </div>
+    <div class="hint" id="hint">⌘Enter 也可送出 • 部署在 GitHub Pages 後即可離線使用</div>
+  </div>
+
+  <script>
+    const knowledgeBase = {
+      productModels: ["QZ-210", "QZ-350", "WH-12", "SC-800", "TC-40", "SC-800"],
+      companyNames: ["A2O", "北辰汽車", "林子翔", "蔡佩珊", "黃冠宇"],
+      faqs: [
+        ["如何處理客訴中的個資", "去識別化"],
+        ["A2O 的產品有哪些", "型號列表"],
+        ["週報是誰寫的", "業務/品保/行銷"],
+        ["影子 AI 是什麼", "30 位同仁使用的 AI 工具"]
+      ]
+    };
+
+    function buildSystemPrompt() {
+      const faqSection = knowledgeBase.faqs.map(([q, a]) => `Q: ${q} → A: ${a}`).join("\n");
+      return `你是 A20 練習包的知識助理。請只根據下面提供的「知識庫摘要」回答使用者問題。如果答案不在摘要內，請誠實說明「我無法從目前的資料中找到相關答案」，不要自行編造。切勿說明你是一個大型語言模型，也不要主動提供與 A20 練習包無關的資訊。
+
+      知識庫摘要：
+      - 公司：A2O（虛構精密零組件廠），客戶有整車廠、電子廠、後改裝用線組。北辰汽車也是虛構的。
+      - 產品型號：QZ-210（沖壓支架），QZ-350（車用外殼），WH-12（行車記錄器電源線組），SC-800（倒車雷達線束），TC-40（防水端子）。
+      - 流程：週報（業務/品保/行銷），去識別化（客訴來信個資脫敏），影子 AI（30 位同仁在用的 AI 工具）。
+      - 情境：情境一（展後名單），情境二（產品母稿），情境三（新人須知/退換貨辦法），情境四（客服紀錄），情境五（客戶意見），案件（客訴處理清單）。
+      - 常見問題：${faqSection}
+      `;
+    }
+
+    const systemPrompt = buildSystemPrompt();
+
+    let apiKey = null;
+    let chatMessages = [];
+    const chatContainer = document.getElementById("chat-container");
+    const inputWrapper = document.getElementById("input-wrapper");
+    const userInput = document.getElementById("user-input");
+    const btnSend = document.getElementById("btn-send");
+    const apiKeyInput = document.getElementById("api-key-input");
+
+    const storedKey = localStorage.getItem("groqApiKey");
+    if (storedKey) apiKey = storedKey;
+
+    function showHint(show, text) {
+      const hint = document.getElementById("hint");
+      hint.style.display = show ? "block" : "none";
+      hint.innerText = text || "請先輸入 Groq API Key 才能使用服務";
+    }
+
+    function addMessage(role, content, isFromApi = false) {
+      const div = document.createElement("div");
+      div.className = `message ${role}`;
+      div.innerHTML = `<strong>${role === "user" ? "你" : "助理"}</strong>${content}`;
+      const ts = new Date();
+      const timeStr = `${ts.getHours():02}:${ts.getMinutes():02}`;
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "timestamp";
+      timeSpan.innerText = ts.toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" });
+      div.appendChild(timeSpan);
+      chatContainer.appendChild(div);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function localSearch(userQuestion) {
+      const q = userQuestion.toLowerCase();
+      for (const model of knowledgeBase.productModels) {
+        if (q.includes(model.toLowerCase())) {
+          return `我知道你在問「${model}」。根據 A20 練習包，這是一個精密零組件型號，常用於沖壓件、外殼或線束應用。`;
+        }
+      }
+      return null;
+    }
+
+    async function callGroq(userQuestion) {
+      if (!apiKey) {
+        addMessage("ai", "請先在上面輸入 Groq API Key。", true);
+        return;
+      }
+
+      addMessage("ai", "▏思考中...", true);
+      const url = "https://api.groq.com/openai/v1/chat/completions";
+      const payload = {
+        model: "llama-3.1-8b-instant",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userQuestion }
+        ],
+        temperature: 0.7,
+        max_tokens: 1024
+      };
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.error?.message || "Groq API 呼叫失敗");
+        }
+
+        const data = await res.json();
+        const aiReply = data.choices?.[0]?.message?.content || "（未收到回應）";
+        const lastChild = chatContainer.lastElementChild;
+        if (lastChild && lastChild.innerText.includes("思考中")) {
+          chatContainer.removeChild(lastChild);
+        }
+        addMessage("ai", aiReply, true);
+      } catch (err) {
+        const lastChild = chatContainer.lastElementChild;
+        if (lastChild && lastChild.innerText.includes("思考中")) {
+          chatContainer.removeChild(lastChild);
+        }
+        addMessage("ai", `❌ 錯誤：${err.message}\n\n可能的原因：API Key 無效、額度耗盡或網絡問題。請檢查 Key 後重試。`, true);
+      }
+    }
+
+    btnSend.addEventListener("click", () => {
+      const question = userInput.value.trim();
+      if (!question) return;
+      addMessage("user", question);
+      userInput.value = "";
+      if (!apiKey) {
+        showHint(true, "請輸入 Groq API Key 才能使用服務");
+        addMessage("ai", "請先在上面輸入 Groq API Key。", true);
+        return;
+      }
+      const localResult = localSearch(question);
+      if (localResult) {
+        addMessage("ai", localResult);
+      } else {
+        callGroq(question);
+      }
+    });
+
+    userInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") btnSend.click();
+    });
+
+    apiKeyInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const key = apiKeyInput.value.trim();
+        if (key) {
+          apiKey = key;
+          localStorage.setItem("groqApiKey", key);
+          showHint(false);
+          addMessage("ai", "✅ API Key 已驗證，可以開始提問了！", true);
+        }
+      }
+    });
+
+    showHint(!apiKey, "請先輸入 Groq API Key 才能使用服務");
+    if (apiKey) {
+      addMessage("ai", "✅ API Key 驗證成功，歡迎使用 A20 知識問答助理！我可以回答關於 A2O 公司、產品型號、業務流程與常見問題。請直接輸入你的問題。", true);
+    }
+  </script>
+</body>
+</html>
